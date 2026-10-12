@@ -179,7 +179,7 @@ def score_product(
     }
     return DimensionScores(
         **{
-            key: round(value if value is not None else 100, 2)
+            key: round(value, 2) if value is not None else None
             for key, value in dimensions.items()
         },
         total=round(total, 2),

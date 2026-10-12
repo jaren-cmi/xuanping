@@ -48,11 +48,11 @@ class SalesEstimate(BaseModel):
 
 
 class DimensionScores(BaseModel):
-    demand: float
-    competition: float
-    profit: float
-    opportunity: float
-    risk: float
+    demand: float | None
+    competition: float | None
+    profit: float | None
+    opportunity: float | None
+    risk: float | None
     total: float
     details: dict[str, Any] = Field(default_factory=dict)
 
