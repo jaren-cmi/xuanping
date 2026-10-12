@@ -22,11 +22,15 @@ class Product(BaseModel):
     brand: str = ""
     brand_share: float | None = None
     rating_distribution: dict[str, int] = Field(default_factory=dict)
-    fragile: bool = False
-    oversized: bool = False
-    seasonal: bool = False
-    regulated: bool = False
-    high_ip_risk: bool = False
+    package_length_in: float | None = None
+    package_width_in: float | None = None
+    package_height_in: float | None = None
+    package_weight_lb: float | None = None
+    fragile: bool | None = None
+    oversized: bool | None = None
+    seasonal: bool | None = None
+    regulated: bool | None = None
+    high_ip_risk: bool | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -50,7 +54,7 @@ class DimensionScores(BaseModel):
     opportunity: float
     risk: float
     total: float
-    details: dict[str, float] = Field(default_factory=dict)
+    details: dict[str, Any] = Field(default_factory=dict)
 
 
 class PainPoint(BaseModel):
@@ -64,6 +68,7 @@ class ReportProduct(BaseModel):
     estimate: SalesEstimate
     scores: DimensionScores
     pain_points: list[PainPoint] = Field(default_factory=list)
+    supplier_matches: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class TaskResult(BaseModel):

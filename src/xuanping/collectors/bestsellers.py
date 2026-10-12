@@ -1,5 +1,5 @@
 import re
-from urllib.parse import quote, urljoin
+from urllib.parse import quote
 
 from selectolax.lexbor import LexborHTMLParser as HTMLParser
 

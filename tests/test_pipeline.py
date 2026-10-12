@@ -61,4 +61,5 @@ def test_pipeline_saves_report_and_resumes_collected_asins(tmp_path):
     assert bestsellers.calls == 1
     assert result.products[0].product.asin == "B000000001"
     assert "Top 3 深度分析" in export_report(storage, task_id, "md")
+    assert "供应链比价" in export_report(storage, task_id, "md")
     assert storage.list_products(task_id)[0]["asin"] == "B000000001"

@@ -14,6 +14,13 @@ SELECTORS = {
     "bsr": ["#detailBullets_feature_div", "#productDetails_detailBullets_sections1"],
     "image": ["#landingImage", "#imgBlkFront"],
     "bullets": ["#feature-bullets li"],
+    "brand": ["#bylineInfo", "#brand"],
+    "rating_bars": [
+        "#histogramTable tr",
+        "#histogramTable [data-hook='rating-bar']",
+        "[data-hook='rating-bar']",
+    ],
+    "details": ["#productDetails_techSpec_section_1", "#detailBullets_feature_div"],
 }
 
 
@@ -44,6 +51,55 @@ class ProductCollector(BaseCollector):
                 reviews_match.group(2).upper() if reviews_match.group(2) else "", 1
             )
             review_count = int(float(reviews_match.group(1)) * multiplier)
+        distribution: dict[str, int] = {}
+        rating_bars = next(
+            (tree.css(selector) for selector in SELECTORS["rating_bars"] if tree.css(selector)),
+            [],
+        )
+        for bar in rating_bars:
+            label = " ".join(
+                [bar.text(strip=True), *bar.attributes.values()]
+            )
+            star_match = re.search(r"([1-5])\s*star", label, re.I)
+            percent_match = re.search(r"(\d+(?:\.\d+)?)\s*%", label)
+            if star_match and percent_match:
+                distribution[star_match.group(1)] = round(
+                    review_count * float(percent_match.group(1)) / 100
+                )
+        brand = ""
+        for selector in SELECTORS["brand"]:
+            brand_node = tree.css_first(selector)
+            if brand_node:
+                brand = brand_node.text(strip=True)
+                brand = re.sub(r"^(visit the|brand:)\s*", "", brand, flags=re.I)
+                brand = re.sub(r"\s+store$", "", brand, flags=re.I).strip()
+                if brand:
+                    break
+        detail_text = " ".join(
+            node.text(strip=True)
+            for selector in SELECTORS["details"]
+            for node in tree.css(selector)
+        )
+        dimensions_match = re.search(
+            r"(?:Product Dimensions|Package Dimensions)[\s:]*"
+            r"([\d.]+)\s*[x×]\s*([\d.]+)\s*[x×]\s*([\d.]+)\s*(inches|cm|centimeters)",
+            detail_text,
+            re.I,
+        )
+        dims = [float(value) for value in dimensions_match.groups()[:3]] if dimensions_match else []
+        if dimensions_match and dimensions_match.group(4).lower() in {"cm", "centimeters"}:
+            dims = [value / 2.54 for value in dims]
+        weight_match = re.search(
+            r"(?:Shipping Weight|Package Weight|Item Weight)[\s:]*([\d.]+)\s*(pounds|lbs?|ounces?|oz|kg|g)\b",
+            detail_text,
+            re.I,
+        )
+        weight = None
+        if weight_match:
+            weight = float(weight_match.group(1))
+            unit = weight_match.group(2).lower()
+            weight *= {"kg": 2.20462, "g": 0.00220462, "oz": 1 / 16, "ounce": 1 / 16,
+                       "ounces": 1 / 16}.get(unit, 1)
         image = next((tree.css_first(s) for s in SELECTORS["image"] if tree.css_first(s)), None)
         bullets = [
             node.text(strip=True)
@@ -60,4 +116,10 @@ class ProductCollector(BaseCollector):
             bsr=int(bsr_match.group(1).replace(",", "")) if bsr_match else None,
             image_url=image.attributes.get("src") if image else None,
             bullets=bullets,
+            brand=brand,
+            rating_distribution=distribution,
+            package_length_in=dims[0] if dims else None,
+            package_width_in=dims[1] if dims else None,
+            package_height_in=dims[2] if dims else None,
+            package_weight_lb=weight,
         )
