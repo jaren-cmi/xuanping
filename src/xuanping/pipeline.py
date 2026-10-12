@@ -174,10 +174,6 @@ class Pipeline:
                     )
                     sourcing = self.sourcing.match(product, offers)
                     product.metadata["supplier_analysis"] = sourcing
-                    if sourcing["confidence"] != "low" and sourcing["cost_min_usd"] is not None:
-                        product.acquisition_cost = (
-                            sourcing["cost_min_usd"] + sourcing["cost_max_usd"]
-                        ) / 2
                 except CaptchaDetected as error:
                     message = f"CAPTCHA 告警：{error}"
                     logger.error(message)
@@ -186,6 +182,14 @@ class Pipeline:
                 except Exception as error:
                     logger.warning("商品 %s 1688 比价失败: %s", product.asin, error)
                     errors.append(f"{product.asin} 1688 比价: {error}")
+            sourcing = product.metadata.get("supplier_analysis")
+            if sourcing:
+                product.acquisition_cost = (
+                    (sourcing["cost_min_usd"] + sourcing["cost_max_usd"]) / 2
+                    if sourcing.get("confidence") in {"high", "medium"}
+                    and sourcing.get("cost_min_usd") is not None
+                    and sourcing.get("cost_max_usd") is not None else None
+                )
             self.storage.save_product(
                 task_id, product.asin, product.model_dump(mode="json"), stage=stage
             )

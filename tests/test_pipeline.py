@@ -5,6 +5,7 @@ from io import StringIO
 import pytest
 
 from xuanping.analysis.scoring import score_product
+from xuanping.analysis.sourcing import SourcingAnalyzer
 from xuanping.config import Settings
 from xuanping.models import DimensionScores, Product, ReportProduct, SalesEstimate, TaskResult
 from xuanping.pipeline import Pipeline, _compute_brand_share, export_report, render_report
@@ -140,3 +141,44 @@ def test_pipeline_brand_share_uses_only_scored_products_and_refreshes_cached_sco
         item.scores.total == score_product(item.product, item.estimate).total
         for item in resumed.products
     )
+
+
+@pytest.mark.parametrize(
+    ("scores", "prices", "cost", "source"),
+    [
+        ([90], [36], 5, "1688_medium"),
+        ([90, 86], [36, 38], 37 / 7.2, "1688_high"),
+        ([90, 86], [10, 100], None, "fallback"),
+        ([], [], None, "fallback"),
+    ],
+)
+def test_pipeline_adopts_only_usable_supplier_costs(tmp_path, scores, prices, cost, source):
+    class FakeLLM:
+        def complete_json(self, messages):
+            return {
+                "keywords": "杯子",
+                "matches": [{"index": index, "score": score} for index, score in enumerate(scores)],
+            }
+
+    class FakeSupplier:
+        def collect(self, keywords, limit):
+            return [
+                {"title": "杯子", "price_min_cny": price, "price_max_cny": price}
+                for price in prices
+            ]
+
+    storage = Storage(tmp_path / "costs.db")
+    pipeline = Pipeline(
+        settings=Settings(enable_1688=False), storage=storage,
+        bestsellers=FakeBestsellers(), products=FakeProducts(),
+        trends=FakeTrends(), reviews=FakeReviews(), pain_points=FakePainPoints(),
+        supplier=FakeSupplier(), sourcing=SourcingAnalyzer(FakeLLM()),
+    )
+    result = pipeline.run("home", top=0)
+    item = result.products[0]
+    expected_cost = pytest.approx(cost) if cost is not None else None
+    assert item.product.acquisition_cost == expected_cost
+    assert item.scores.details["cost_source"] == source
+    resumed = pipeline.run("home", task_id=result.task_id, top=0).products[0]
+    assert resumed.product.acquisition_cost == expected_cost
+    assert resumed.scores.details["cost_source"] == source

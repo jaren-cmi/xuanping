@@ -1,3 +1,4 @@
+import json
 from typing import Any
 
 from xuanping.llm.client import LLMClient
@@ -15,8 +16,8 @@ class PainPointAnalyzer:
         llm = self.llm or LLMClient()
         result = llm.complete_json(
             [
-                {"role": "system", "content": PAIN_POINTS_SYSTEM},
-                {"role": "user", "content": PAIN_POINTS_USER.format(reviews="\n".join(reviews))},
+                {"role": "system", "content": PAIN_POINTS_SYSTEM + "\n" + PAIN_POINTS_USER},
+                {"role": "user", "content": json.dumps({"reviews": reviews}, ensure_ascii=False)},
             ]
         )
         return [PainPoint.model_validate(item) for item in result.get("pain_points", [])]

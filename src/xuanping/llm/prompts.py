@@ -3,6 +3,5 @@ PAIN_POINTS_SYSTEM = """你是亚马逊产品体验研究员。请只根据提�
 {"pain_points":[{"issue":"痛点","frequency":评论数量整数,"recommendation":"建议"}]}。
 不要把评论之外的推测当作事实。"""
 
-PAIN_POINTS_USER = """请分析以下 1-3 星评论并聚类痛点：
-{reviews}
+PAIN_POINTS_USER = """请分析提供的 1-3 星评论并聚类痛点：
 仅输出符合要求的 JSON。"""
