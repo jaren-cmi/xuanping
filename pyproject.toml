@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xuanping"
+version = "0.1.0"
+description = "面向亚马逊卖家的免费数据源选品 AI Agent"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+dependencies = [
+    "httpx>=0.28.1",
+    "openai>=1.68.2",
+    "pydantic>=2.10.6",
+    "pydantic-settings>=2.8.1",
+    "pytrends>=4.9.2",
+    "selectolax>=0.3.28",
+    "tenacity>=9.0.0",
+    "typer>=0.15.2",
+]
+
+[project.optional-dependencies]
+browser = ["playwright>=1.51.0"]
+dev = ["pytest>=8.3.5"]
+
+[project.scripts]
+xuanping = "xuanping.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
