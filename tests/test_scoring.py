@@ -1,3 +1,5 @@
+import pytest
+
 from xuanping.analysis.scoring import score_product
 from xuanping.models import Product, SalesEstimate
 
@@ -64,3 +66,30 @@ def test_missing_dimensions_are_none_and_excluded_from_total():
     assert scores.total == round(
         (scores.demand * 0.30 + scores.opportunity * 0.15) / 0.45, 2
     )
+
+
+@pytest.mark.parametrize(
+    ("product_cost", "confidence", "override_cost", "source"),
+    [
+        (None, None, None, "fallback"),
+        (20, None, None, "provided"),
+        (20, None, 0, "provided"),
+        (5, "high", None, "1688_high"),
+        (5, "medium", None, "1688_medium"),
+        (5, "high", 20, "provided"),
+    ],
+)
+def test_cost_source_identifies_the_cost_actually_used(
+    product_cost, confidence, override_cost, source,
+):
+    product = Product(
+        asin="B000000001", price=30, acquisition_cost=product_cost,
+        metadata={"supplier_analysis": {"confidence": confidence}},
+    )
+    scores = score_product(product, estimate(100), acquisition_cost=override_cost)
+    assert scores.details["cost_source"] == source
+    used_cost = override_cost if override_cost is not None else product_cost
+    expected_margin = (
+        30 - (used_cost if used_cost is not None else 9) - 5.5 - 30 * 0.15 - 30 * 0.10
+    ) / 30
+    assert scores.profit == round(max(0, min(100, expected_margin * 250)), 2)

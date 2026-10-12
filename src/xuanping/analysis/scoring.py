@@ -65,10 +65,13 @@ def score_product(
     price = product.price
     cost = acquisition_cost if acquisition_cost is not None else product.acquisition_cost
     cost_confidence = product.metadata.get("supplier_analysis", {}).get("confidence")
-    cost_source = (
-        f"1688_{cost_confidence}"
-        if cost is not None and cost_confidence in {"high", "medium"} else "fallback"
-    )
+    cost_source = "fallback"
+    if cost is not None:
+        cost_source = (
+            f"1688_{cost_confidence}"
+            if acquisition_cost is None and cost_confidence in {"high", "medium"}
+            else "provided"
+        )
     fba_fee, fba_source = estimate_fba_fee(product)
     profit_margin = None
     profit = None
