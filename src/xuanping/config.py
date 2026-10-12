@@ -1,4 +1,6 @@
 from functools import lru_cache
+from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -30,6 +32,13 @@ class Settings(BaseSettings):
     supplier_1688_candidates: int = Field(
         default=10, ge=1, validation_alias="XUANPING_1688_CANDIDATES"
     )
+    supplier_1688_keyword_encoding: Literal["utf-8", "gbk"] = Field(
+        default="utf-8", validation_alias="XUANPING_1688_KEYWORD_ENCODING"
+    )
+    supplier_1688_search_url: str = Field(
+        default="https://s.1688.com/selloffer/offer_search.htm?keywords={keywords}",
+        validation_alias="XUANPING_1688_SEARCH_URL",
+    )
     trends_top_n: int = Field(default=20, ge=1)
     score_weights: dict[str, float] = Field(
         default_factory=lambda: {
@@ -47,6 +56,14 @@ class Settings(BaseSettings):
         value = value.lower().strip()
         if value not in {"zhipu", "qwen"}:
             raise ValueError("llm_provider 必须为 zhipu 或 qwen")
+        return value
+
+    @field_validator("supplier_1688_search_url")
+    @classmethod
+    def validate_supplier_search_url(cls, value: str) -> str:
+        url = urlsplit(value)
+        if url.scheme not in {"http", "https"} or not url.netloc or "{keywords}" not in value:
+            raise ValueError("1688 搜索 URL 必须为含 {keywords} 占位符的 HTTP(S) 地址")
         return value
 
     @model_validator(mode="after")

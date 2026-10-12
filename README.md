@@ -51,6 +51,23 @@ xuanping report --task <task-id> --format md --output report.md
 
 配置 LLM API Key 后，默认启用 1688 比价：Agent 将英文商品标题提炼为中文搜索词，对候选供应商商品进行语义匹配，并在报告中列出价格区间、MOQ、相似度和估算毛利。只有匹配置信度足够时才使用该成本；否则回退到 `XUANPING_DEFAULT_COST_MULTIPLIER`。可用 `XUANPING_ENABLE_1688=false` 关闭，`XUANPING_CNY_USD_RATE` 默认 7.2，需定期更新。
 
+成本可信度在评分明细的 `cost_source` 中标记：
+- `1688_high`：2–3 个有效报价，相似度均 ≥80，价格离散度 ≤30%。
+- `1688_medium`：单个有效报价且相似度 ≥85，或多个有效报价相似度均 ≥65、价格离散度 ≤50%。成本可用，但仍需人工确认规格、MOQ、运费和供应商可靠性。
+- `fallback`：未获得可用报价、相似度不足或报价差异过大，使用默认成本倍率估算。
+
+价格离散度为（最高报价上限 − 最低报价下限）/ 报价中点均值；单个报价的离散度为不适用（JSON 中为 `null`），不能视为多供应商交叉验证。
+
+### 1688 静态采集现状与排查
+
+当前只实现静态 HTTP 采集，**搜索 URL 和选择器未经真实页面验证，不保证抓通**。1688 搜索通常依赖 JavaScript 和登录态；HTTP 200 也可能只返回空壳、登录页或验证页。空报价不等于没有供应商，采集失败时成本会回退，不应据此作采购决策。
+
+- `XUANPING_1688_SEARCH_URL` 可替换为获准使用的搜索页模板，必须包含 `{keywords}`，默认仍为旧版搜索 URL。
+- `XUANPING_1688_KEYWORD_ENCODING=utf-8|gbk` 控制关键词编码，默认 `utf-8`。仅在目标页面确实需要时选择 `gbk`；无法编码的字符会报错并由 pipeline 记录，不会悄悄丢弃字符。
+- 0 条报价时，中文告警记录 HTML 长度、候选节点数，并区分页面明确无商品、疑似登录/反爬拦截、选择器失效或 JS 未渲染；这些是启发式诊断，不是真实页面可用性的证明。没有任何商品线索的静态页面也会提示不能认定真实搜索无结果。
+- 排查时先查看日志，再在有权限的浏览器中手动确认搜索结果、编码和页面结构；有商品但抓不到时，核对 `collectors/supplier_1688.py` 中集中管理的选择器。遇到验证码或 HTTP 401/403/429，不自动重试或绕过限制。
+- 本轮未内置自动 Playwright 后备流程，也未实现 `XUANPING_1688_USE_BROWSER` 开关。需要动态页面时，可安装已有 `browser` extra（`pip install -e ".[browser]"`，并运行 `playwright install chromium`），在获准访问的环境中实现并注入浏览器版 supplier collector，复用 `collect(keywords, limit)` 接口。浏览器不是绕过登录、验证码或平台授权的工具。
+
 代理通过 `XUANPING_PROXIES` 配置，支持 `XUANPING_PROXY_STRATEGY=random|round_robin`、失败剔除与冷却。启动健康检查默认关闭。Amazon/1688 采集均采用保守延迟，并在检测到 CAPTCHA 时立即中止；代理不能用于规避访问控制。
 
 FBA 费用按包装尺寸和重量段估算，缺失时采用保守回退；费率表是简化近似值，使用前须核对 Amazon Seller Central 官方费率和类目佣金。
@@ -69,6 +86,8 @@ xuanping calibrate --file samples.csv
 ```
 
 支持 `xuanping report --task <task-id> --format md|csv|json`。
+
+Markdown 和 CSV 中的维度 `N/A` 表示数据缺失、无法给出有效评分，不是 0 分或满分；JSON 中对应为 `null`。总分只对有数据且权重为正的维度动态归一化，因此必须结合数据完整度审阅。品牌占比只以本次实际参与评分的商品（含未知品牌）为分母，是同一榜单内品牌集中度的代理指标，并非市场份额；纯采集阶段不计算该指标。
 
 ## 模块
 
