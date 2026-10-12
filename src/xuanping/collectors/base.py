@@ -3,6 +3,7 @@ import time
 from typing import Any
 
 import httpx
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from xuanping.config import Settings, get_settings
 
@@ -27,6 +28,11 @@ class BaseCollector:
         self.sleep = sleep
         self.rng = rng
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=8),
+        reraise=True,
+    )
     def get(self, url: str, **kwargs: Any) -> Any:
         self.sleep(self.rng.uniform(self.settings.request_delay_min, self.settings.request_delay_max))
         headers = kwargs.pop("headers", {})
@@ -34,7 +40,7 @@ class BaseCollector:
         if self.client is not None:
             response = self.client.get(url, headers=headers, **kwargs)
         else:
-            proxy = self.rng.choice(self.settings.proxies) if self.settings.proxies else None
+            proxy = self.rng.choice(self.settings.proxy_pool) if self.settings.proxy_pool else None
             with httpx.Client(
                 proxy=proxy, timeout=30, follow_redirects=True, headers=headers
             ) as client:

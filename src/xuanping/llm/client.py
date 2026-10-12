@@ -46,21 +46,26 @@ class LLMClient:
         wait=wait_exponential(multiplier=1, min=1, max=8),
         reraise=True,
     )
-    def _request(self, messages: list[dict[str, str]]) -> Any:
-        return self.client.chat.completions.create(
-            model=self.settings.resolved_llm_model,
-            messages=messages,
-            response_format={"type": "json_object"},
-        )
+    def _request(self, messages: list[dict[str, str]], response_format: bool = True) -> Any:
+        kwargs: dict[str, Any] = {
+            "model": self.settings.resolved_llm_model,
+            "messages": messages,
+        }
+        if response_format:
+            kwargs["response_format"] = {"type": "json_object"}
+        return self.client.chat.completions.create(**kwargs)
 
     def complete_json(
         self, messages: list[dict[str, str]], *, response_format: bool = True
     ) -> Any:
         # 某些兼容接口不支持 response_format；失败后使用 prompt 约束并由解析器兜底。
         try:
-            response = self._request(messages)
+            response = self._request(messages, response_format=response_format)
         except Exception as error:
-            if not response_format:
+            message = str(error).lower()
+            if not response_format or not any(
+                term in message for term in ("response_format", "json_object", "json mode")
+            ):
                 raise
             logger.debug("JSON 模式请求失败，退回普通聊天模式: %s", error)
             response = self._request_plain(messages)

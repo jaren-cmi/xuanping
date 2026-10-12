@@ -16,10 +16,19 @@ class Settings(BaseSettings):
     amazon_domain: str = "www.amazon.com"
     request_delay_min: float = Field(default=2.0, ge=0)
     request_delay_max: float = Field(default=5.0, ge=0)
-    proxies: list[str] = Field(default_factory=list)
+    proxies: str = ""
     database_path: str = "xuanping.db"
     review_limit: int = Field(default=30, ge=0)
     default_cost_multiplier: float = Field(default=0.3, ge=0)
+    score_weights: dict[str, float] = Field(
+        default_factory=lambda: {
+            "demand": 0.30,
+            "competition": 0.20,
+            "profit": 0.25,
+            "opportunity": 0.15,
+            "risk": 0.10,
+        }
+    )
 
     @field_validator("llm_provider")
     @classmethod
@@ -29,17 +38,22 @@ class Settings(BaseSettings):
             raise ValueError("llm_provider 必须为 zhipu 或 qwen")
         return value
 
-    @field_validator("proxies", mode="before")
-    @classmethod
-    def split_proxies(cls, value: object) -> object:
-        if isinstance(value, str):
-            return [proxy.strip() for proxy in value.split(",") if proxy.strip()]
-        return value
-
     @model_validator(mode="after")
     def validate_delays(self) -> "Settings":
         if self.request_delay_max < self.request_delay_min:
             raise ValueError("request_delay_max 不能小于 request_delay_min")
+        if set(self.score_weights) - {
+            "demand",
+            "competition",
+            "profit",
+            "opportunity",
+            "risk",
+        }:
+            raise ValueError("score_weights 只能包含需求、竞争、利润、机会和风险维度")
+        if any(weight < 0 for weight in self.score_weights.values()):
+            raise ValueError("score_weights 权重不能为负数")
+        if not any(weight > 0 for weight in self.score_weights.values()):
+            raise ValueError("score_weights 至少需要一个正数")
         return self
 
     @property
@@ -55,6 +69,10 @@ class Settings(BaseSettings):
         if self.llm_model:
             return self.llm_model
         return "qwen-plus" if self.llm_provider == "qwen" else "glm-4-flash"
+
+    @property
+    def proxy_pool(self) -> list[str]:
+        return [proxy.strip() for proxy in self.proxies.split(",") if proxy.strip()]
 
 
 @lru_cache

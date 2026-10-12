@@ -1,4 +1,5 @@
 from collections.abc import Mapping
+import math
 
 from xuanping.models import DimensionScores, Product, SalesEstimate
 
@@ -21,6 +22,7 @@ def score_product(
     *,
     weights: Mapping[str, float] | None = None,
     acquisition_cost: float | None = None,
+    default_cost_multiplier: float = 0.3,
 ) -> DimensionScores:
     """根据销量、评论壁垒、利润、改进机会和风险生成 0-100 分。"""
     weights = dict(weights or DEFAULT_WEIGHTS)
@@ -28,7 +30,7 @@ def score_product(
     if total_weight <= 0:
         raise ValueError("至少需要一个正数维度权重")
 
-    demand_sales = _clamp(20 + 20 * __import__("math").log10(max(1, estimate.monthly_sales)))
+    demand_sales = _clamp(20 + 20 * math.log10(max(1, estimate.monthly_sales)))
     bsr_stability = float(product.metadata.get("bsr_stability", 50))
     trend = product.trends_slope or 0.0
     demand_trend = _clamp(50 + trend * 10)
@@ -41,7 +43,7 @@ def score_product(
 
     price = product.price or 0.0
     cost = acquisition_cost if acquisition_cost is not None else product.acquisition_cost
-    cost = cost if cost is not None else price * 0.3
+    cost = cost if cost is not None else price * default_cost_multiplier
     estimated_fba = min(price * 0.25, 3.5 + price * 0.08) if price > 0 else 0
     estimated_ad = price * 0.10
     profit_margin = (price - cost - estimated_fba - price * 0.15 - estimated_ad) / price if price else 0

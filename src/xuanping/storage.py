@@ -7,11 +7,15 @@ from typing import Any
 class Storage:
     def __init__(self, path: str | Path = "xuanping.db") -> None:
         self.path = str(path)
+        self._memory_connection = sqlite3.connect(":memory:") if self.path == ":memory:" else None
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
+        if self._memory_connection is not None:
+            self._memory_connection.row_factory = sqlite3.Row
+            return self._memory_connection
         connection = sqlite3.connect(self.path)
         connection.row_factory = sqlite3.Row
         return connection

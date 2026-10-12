@@ -1,4 +1,6 @@
-from selectolax.parser import HTMLParser
+import re
+
+from selectolax.lexbor import LexborHTMLParser as HTMLParser
 
 from xuanping.collectors.base import BaseCollector
 
@@ -8,6 +10,8 @@ REVIEW_SELECTORS = ("[data-hook='review']", ".review")
 
 class ReviewsCollector(BaseCollector):
     def collect_low_star(self, asin: str, limit: int = 30) -> list[str]:
+        if limit <= 0:
+            return []
         url = f"https://{self.settings.amazon_domain}/product-reviews/{asin}?sortBy=recent"
         response = self.get(url)
         tree = HTMLParser(response.text)
@@ -20,8 +24,6 @@ class ReviewsCollector(BaseCollector):
         for review in reviews:
             rating = review.css_first("[data-hook='review-star-rating'], .review-rating")
             rating_text = rating.text(strip=True) if rating else ""
-            import re
-
             match = re.search(r"\d+(?:\.\d+)?", rating_text)
             if not match or float(match.group()) > 3:
                 continue

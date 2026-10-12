@@ -1,6 +1,6 @@
 import re
 
-from selectolax.parser import HTMLParser
+from selectolax.lexbor import LexborHTMLParser as HTMLParser
 
 from xuanping.collectors.base import BaseCollector
 from xuanping.models import Product
@@ -35,9 +35,15 @@ class ProductCollector(BaseCollector):
         rating_text = text_for("rating")
         rating_match = re.search(r"\d+(?:\.\d+)?", rating_text)
         reviews_text = text_for("reviews").replace(",", "")
-        reviews_match = re.search(r"\d+", reviews_text)
+        reviews_match = re.search(r"(\d+(?:\.\d+)?)\s*([KMB])?", reviews_text, re.I)
         bsr_text = text_for("bsr")
         bsr_match = re.search(r"#([\d,]+)", bsr_text)
+        review_count = 0
+        if reviews_match:
+            multiplier = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000}.get(
+                reviews_match.group(2).upper() if reviews_match.group(2) else "", 1
+            )
+            review_count = int(float(reviews_match.group(1)) * multiplier)
         image = next((tree.css_first(s) for s in SELECTORS["image"] if tree.css_first(s)), None)
         bullets = [
             node.text(strip=True)
@@ -50,7 +56,7 @@ class ProductCollector(BaseCollector):
             title=text_for("title"),
             price=float(price_match.group()) if price_match else None,
             rating=float(rating_match.group()) if rating_match else None,
-            review_count=int(reviews_match.group()) if reviews_match else 0,
+            review_count=review_count,
             bsr=int(bsr_match.group(1).replace(",", "")) if bsr_match else None,
             image_url=image.attributes.get("src") if image else None,
             bullets=bullets,

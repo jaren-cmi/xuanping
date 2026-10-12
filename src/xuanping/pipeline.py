@@ -67,6 +67,7 @@ class Pipeline:
             candidates = []
         if not candidates:
             try:
+                print("采集榜单...")
                 candidates = self.bestsellers.collect(category, list_type)
             except Exception as error:
                 message = f"榜单采集失败: {error}"
@@ -93,20 +94,28 @@ class Pipeline:
                 continue
             try:
                 if product.title:
+                    print(f"验证趋势：{product.asin}")
                     keyword = " ".join(product.title.split()[:5])
                     trend_result = self.trends.collect(keyword)
                     product.trends_slope = float(trend_result.get("slope", 0))
                     product.trend_seasonality = float(trend_result.get("seasonality", 0))
+                    product.metadata["trend_regions"] = trend_result.get("regions", {})
             except Exception as error:
                 logger.warning("商品 %s 趋势验证失败: %s", product.asin, error)
                 errors.append(f"{product.asin} Google Trends: {error}")
             estimate = self.estimator.estimate(product.bsr, category)
-            scores = score_product(product, estimate)
+            scores = score_product(
+                product,
+                estimate,
+                weights=self.settings.score_weights,
+                default_cost_multiplier=self.settings.default_cost_multiplier,
+            )
             analyzed.append(ReportProduct(product=product, estimate=estimate, scores=scores))
             self.storage.save_product(task_id, product.asin, product.model_dump(mode="json"))
         analyzed.sort(key=lambda item: item.scores.total, reverse=True)
         for item in analyzed[: max(0, top)]:
             try:
+                print(f"分析差评：{item.product.asin}")
                 item.product.low_star_reviews = self.reviews.collect_low_star(
                     item.product.asin, self.settings.review_limit
                 )
@@ -123,7 +132,7 @@ class Pipeline:
         )
         for item in analyzed:
             self.storage.save_product(
-                task_id, item.product.asin, item.model_dump(mode="json")
+                task_id, item.product.asin, item.product.model_dump(mode="json")
             )
         self.storage.save_task(
             task_id, category, result.status, result.model_dump(mode="json")

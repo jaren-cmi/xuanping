@@ -1,7 +1,7 @@
 import re
 from urllib.parse import quote, urljoin
 
-from selectolax.parser import HTMLParser
+from selectolax.lexbor import LexborHTMLParser as HTMLParser
 
 from xuanping.collectors.base import BaseCollector
 from xuanping.models import Product
@@ -18,8 +18,8 @@ ASIN_PATTERN = re.compile(r"/(?:dp|gp/product)/([A-Z0-9]{10})", re.I)
 class BestsellersCollector(BaseCollector):
     LIST_TYPES = {
         "bestsellers": "bestsellers",
-        "movers": "movers_and_shakers",
-        "new": "new_releases",
+        "movers": "movers-and-shakers",
+        "new": "new-releases",
     }
 
     def collect(self, category: str, list_type: str = "bestsellers") -> list[Product]:
