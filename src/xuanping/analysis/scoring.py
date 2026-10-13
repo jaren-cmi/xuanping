@@ -1,6 +1,7 @@
 from collections.abc import Mapping
 import math
 
+from xuanping.analysis.fba_fees import commission_rate, estimate_fba_fee
 from xuanping.models import DimensionScores, Product, SalesEstimate
 
 DEFAULT_WEIGHTS = {
@@ -16,6 +17,15 @@ def _clamp(value: float) -> float:
     return max(0.0, min(100.0, value))
 
 
+def _weighted(values: list[tuple[float, float]]) -> float | None:
+    total_weight = sum(weight for _, weight in values)
+    return (
+        sum(value * weight for value, weight in values) / total_weight
+        if total_weight
+        else None
+    )
+
+
 def score_product(
     product: Product,
     estimate: SalesEstimate,
@@ -24,72 +34,157 @@ def score_product(
     acquisition_cost: float | None = None,
     default_cost_multiplier: float = 0.3,
 ) -> DimensionScores:
-    """根据销量、评论壁垒、利润、改进机会和风险生成 0-100 分。"""
+    """根据有效数据生成 0-100 分；缺失子项退出加权并动态归一化。"""
     weights = dict(weights or DEFAULT_WEIGHTS)
-    total_weight = sum(weights.get(key, 0) for key in DEFAULT_WEIGHTS)
-    if total_weight <= 0:
-        raise ValueError("至少需要一个正数维度权重")
+    skipped: list[str] = []
 
-    demand_sales = _clamp(20 + 20 * math.log10(max(1, estimate.monthly_sales)))
-    bsr_stability = float(product.metadata.get("bsr_stability", 50))
-    trend = product.trends_slope or 0.0
-    demand_trend = _clamp(50 + trend * 10)
-    demand = _clamp(demand_sales * 0.55 + bsr_stability * 0.25 + demand_trend * 0.20)
+    demand_parts = [( _clamp(20 + 20 * math.log10(max(1, estimate.monthly_sales))), 0.7)]
+    if product.trends_slope is not None:
+        demand_parts.append((_clamp(50 + product.trends_slope * 10), 0.3))
+    else:
+        skipped.append("trend")
+    demand = _weighted(demand_parts) or 0
 
-    review_barrier = _clamp(100 - product.review_count / 50)
-    rating_barrier = _clamp(100 - max(0, (product.rating or 0) - 3.5) * 30)
-    concentration = _clamp(100 - (product.brand_share or 0) * 100)
-    competition = _clamp(review_barrier * 0.5 + rating_barrier * 0.25 + concentration * 0.25)
+    competition_parts: list[tuple[float, float]] = []
+    if product.review_count > 0:
+        competition_parts.append((_clamp(100 - product.review_count / 50), 0.5))
+    else:
+        skipped.append("review_barrier")
+    if product.rating is not None:
+        competition_parts.append(
+            (_clamp(100 - max(0, product.rating - 3.5) * 30), 0.25)
+        )
+    else:
+        skipped.append("rating_barrier")
+    if product.brand_share is not None:
+        competition_parts.append((_clamp(100 - product.brand_share * 100), 0.25))
+    else:
+        skipped.append("brand_concentration")
+    competition = _weighted(competition_parts)
 
-    price = product.price or 0.0
+    price = product.price
     cost = acquisition_cost if acquisition_cost is not None else product.acquisition_cost
-    cost = cost if cost is not None else price * default_cost_multiplier
-    estimated_fba = min(price * 0.25, 3.5 + price * 0.08) if price > 0 else 0
-    estimated_ad = price * 0.10
-    profit_margin = (price - cost - estimated_fba - price * 0.15 - estimated_ad) / price if price else 0
-    profit = _clamp(profit_margin * 250)
+    cost_source = "1688" if cost is not None else "fallback"
+    fba_fee, fba_source = estimate_fba_fee(product)
+    profit_margin = None
+    profit = None
+    if price is not None and price > 0:
+        cost = cost if cost is not None else price * default_cost_multiplier
+        profit_margin = (
+            price - cost - fba_fee - price * commission_rate(product.category) - price * 0.10
+        ) / price
+        profit = _clamp(profit_margin * 250)
+    else:
+        skipped.append("profit_price")
+    if fba_source == "conservative_fallback":
+        skipped.append("fba_fee_dimensions")
 
-    rating_opportunity = (
-        _clamp((4.3 - product.rating) * 80) if product.rating is not None else 30.0
-    )
-    low_review_share = sum(
-        product.rating_distribution.get(str(star), 0) for star in (1, 2, 3)
-    ) / max(1, sum(product.rating_distribution.values()))
-    opportunity = _clamp(
-        rating_opportunity * 0.6 + min(100, estimate.monthly_sales / 10) * 0.25
-        + low_review_share * 100 * 0.15
-    )
+    opportunity_parts: list[tuple[float, float]] = []
+    if product.rating is not None:
+        opportunity_parts.append((_clamp((4.3 - product.rating) * 80), 0.6))
+    else:
+        skipped.append("rating_opportunity")
+    opportunity_parts.append((_clamp(estimate.monthly_sales / 10), 0.25))
+    low_share = None
+    if product.rating_distribution:
+        count = sum(product.rating_distribution.values())
+        if count > 0:
+            low_share = sum(
+                product.rating_distribution.get(str(star), 0) for star in (1, 2, 3)
+            ) / count
+            opportunity_parts.append((_clamp(low_share * 100), 0.15))
+        else:
+            skipped.append("low_star_share")
+    else:
+        low_share = None
+        skipped.append("low_star_share")
+    opportunity = _weighted(opportunity_parts)
 
-    risk_penalty = (
-        35 * product.high_ip_risk
-        + 20 * product.regulated
-        + 15 * product.fragile
-        + 15 * product.oversized
-        + 15 * product.seasonal
+    risk_flags = {
+        "high_ip_risk": (product.high_ip_risk, 35),
+        "regulated": (product.regulated, 20),
+        "fragile": (product.fragile, 15),
+        "oversized": (product.oversized, 15),
+        "seasonal": (product.seasonal, 15),
+    }
+    risk_penalty = sum(
+        penalty for value, penalty in risk_flags.values() if value is True
     )
-    risk = _clamp(100 - risk_penalty)
-    dimensions = {
+    risk = _weighted([
+        (100 - penalty if value else 100, 1)
+        for value, penalty in risk_flags.values() if value is not None
+    ])
+    if risk is None:
+        skipped.extend(f"risk_{name}" for name, (value, _) in risk_flags.items() if value is None)
+    dimensions: dict[str, float | None] = {
         "demand": demand,
         "competition": competition,
         "profit": profit,
         "opportunity": opportunity,
         "risk": risk,
     }
-    total = sum(dimensions[key] * weights.get(key, 0) for key in dimensions) / total_weight
+    active = {
+        key: value for key, value in dimensions.items()
+        if value is not None and weights.get(key, 0) > 0
+    }
+    total_weight = sum(weights[key] for key in active)
+    total = (
+        sum(float(active[key]) * weights[key] for key in active) / total_weight
+        if total_weight
+        else 0
+    )
+    source_fields = (
+        product.bsr is not None,
+        product.price is not None,
+        product.rating is not None,
+        product.review_count > 0,
+        bool(product.brand),
+        product.brand_share is not None,
+        bool(product.rating_distribution),
+        product.trends_slope is not None,
+        all(value is not None for value in (
+            product.package_length_in, product.package_width_in,
+            product.package_height_in, product.package_weight_lb
+        )),
+        product.acquisition_cost is not None,
+        *(value is not None for value, _ in risk_flags.values()),
+    )
     details = {
-        "estimated_sales": demand_sales,
-        "bsr_stability": _clamp(bsr_stability),
-        "trend": demand_trend,
-        "review_barrier": review_barrier,
-        "rating_barrier": rating_barrier,
-        "brand_concentration": concentration,
-        "profit_margin": _clamp(profit_margin * 100),
-        "rating_opportunity": rating_opportunity,
-        "low_star_share": low_review_share * 100,
+        "estimated_sales": _clamp(
+            20 + 20 * math.log10(max(1, estimate.monthly_sales))
+        ),
+        "review_barrier": (
+            _clamp(100 - product.review_count / 50) if product.review_count > 0 else None
+        ),
+        "rating_barrier": (
+            _clamp(100 - max(0, product.rating - 3.5) * 30)
+            if product.rating is not None else None
+        ),
+        "brand_concentration": (
+            _clamp(100 - product.brand_share * 100)
+            if product.brand_share is not None else None
+        ),
+        "profit_margin": _clamp(profit_margin * 100) if profit_margin is not None else None,
+        "cost_source": cost_source,
+        "fba_fee": fba_fee,
+        "fba_fee_source": fba_source,
+        "commission_rate": commission_rate(product.category),
+        "rating_opportunity": (
+            _clamp((4.3 - product.rating) * 80) if product.rating is not None else None
+        ),
+        "low_star_share": low_share * 100 if low_share is not None else None,
         "risk_penalty": risk_penalty,
+        "skipped_subitems": skipped,
+        "data_completeness": round(sum(source_fields) / len(source_fields), 2),
     }
     return DimensionScores(
-        **dimensions,
+        **{
+            key: round(value if value is not None else 100, 2)
+            for key, value in dimensions.items()
+        },
         total=round(total, 2),
-        details={key: round(value, 2) for key, value in details.items()},
+        details={
+            key: round(value, 2) if isinstance(value, float) else value
+            for key, value in details.items()
+        },
     )

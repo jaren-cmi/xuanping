@@ -27,9 +27,13 @@ def analyze(
     top: int = typer.Option(20, "--top", min=1, help="抓取低星评论的 Top N 商品数量"),
     task: str | None = typer.Option(None, "--task", help="接续已有 collect 任务"),
     list_type: str = typer.Option("bestsellers", "--type", help="bestsellers、movers 或 new"),
+    resume: bool = typer.Option(True, "--resume/--no-resume", help="断点续跑已完成阶段"),
+    force: bool = typer.Option(False, "--force", help="忽略已保存阶段并强制重跑"),
 ) -> None:
     """执行完整选品分析流程。"""
-    result = Pipeline().run(category, top=top, list_type=list_type, task_id=task)
+    result = Pipeline().run(
+        category, top=top, list_type=list_type, task_id=task, resume=resume, force=force
+    )
     typer.echo(f"任务 ID: {result.task_id}")
     typer.echo(f"状态: {result.status}；分析商品: {len(result.products)}")
     for item in result.products[:top]:

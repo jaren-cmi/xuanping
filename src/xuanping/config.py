@@ -6,7 +6,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_prefix="XUANPING_", env_file=".env", env_file_encoding="utf-8", extra="ignore"
+        env_prefix="XUANPING_", env_file=".env", env_file_encoding="utf-8",
+        extra="ignore", populate_by_name=True,
     )
 
     llm_provider: str = "zhipu"
@@ -17,9 +18,19 @@ class Settings(BaseSettings):
     request_delay_min: float = Field(default=2.0, ge=0)
     request_delay_max: float = Field(default=5.0, ge=0)
     proxies: str = ""
+    proxy_strategy: str = "random"
+    proxy_max_failures: int = Field(default=3, ge=1)
+    proxy_cooldown: float = Field(default=300, ge=0)
+    proxy_health_check: bool = False
     database_path: str = "xuanping.db"
     review_limit: int = Field(default=30, ge=0)
     default_cost_multiplier: float = Field(default=0.3, ge=0)
+    enable_1688: bool = True
+    cny_usd_rate: float = Field(default=7.2, gt=0)
+    supplier_1688_candidates: int = Field(
+        default=10, ge=1, validation_alias="XUANPING_1688_CANDIDATES"
+    )
+    trends_top_n: int = Field(default=20, ge=1)
     score_weights: dict[str, float] = Field(
         default_factory=lambda: {
             "demand": 0.30,
@@ -50,6 +61,8 @@ class Settings(BaseSettings):
             "risk",
         }:
             raise ValueError("score_weights 只能包含需求、竞争、利润、机会和风险维度")
+        if self.proxy_strategy not in {"random", "round_robin"}:
+            raise ValueError("proxy_strategy 必须为 random 或 round_robin")
         if any(weight < 0 for weight in self.score_weights.values()):
             raise ValueError("score_weights 权重不能为负数")
         if not any(weight > 0 for weight in self.score_weights.values()):
