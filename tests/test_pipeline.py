@@ -1,6 +1,14 @@
+import csv
+import json
+from io import StringIO
+
+import pytest
+
+from xuanping.analysis.scoring import score_product
+from xuanping.analysis.sourcing import SourcingAnalyzer
 from xuanping.config import Settings
-from xuanping.models import Product
-from xuanping.pipeline import Pipeline, export_report
+from xuanping.models import DimensionScores, Product, ReportProduct, SalesEstimate, TaskResult
+from xuanping.pipeline import Pipeline, _compute_brand_share, export_report, render_report
 from xuanping.storage import Storage
 
 
@@ -63,3 +71,114 @@ def test_pipeline_saves_report_and_resumes_collected_asins(tmp_path):
     assert "Top 3 深度分析" in export_report(storage, task_id, "md")
     assert "供应链比价" in export_report(storage, task_id, "md")
     assert storage.list_products(task_id)[0]["asin"] == "B000000001"
+
+
+@pytest.mark.parametrize("dimension", ["demand", "competition", "profit", "opportunity", "risk"])
+def test_report_renders_missing_dimension_as_na(dimension):
+    values = dict.fromkeys(["demand", "competition", "profit", "opportunity", "risk"], 0)
+    values[dimension] = None
+    result = TaskResult(
+        task_id="test", category="home", status="completed",
+        products=[ReportProduct(
+            product=Product(asin="B000000001"),
+            estimate=SalesEstimate(
+                monthly_sales=100, lower_bound=50, upper_bound=150,
+                confidence="low", category="home",
+            ),
+            scores=DimensionScores(**values, total=0),
+        )],
+    )
+    index = list(values).index(dimension)
+    row = next(line for line in render_report(result).splitlines() if line.startswith("| B000"))
+    assert row.split("|")[5 + index].strip() == "N/A"
+    assert row.count("0.0") == 5
+    csv_row = list(csv.reader(StringIO(render_report(result, "csv"))))[1]
+    assert csv_row[4 + index] == "N/A"
+    assert json.loads(render_report(result, "json"))["products"][0]["scores"][dimension] is None
+
+
+def test_brand_share_counts_asins_and_includes_unknown_brands():
+    products = [
+        Product(asin="one", brand="Acme"), Product(asin="two", brand="ACME"),
+        Product(asin="three", brand="Other"), Product(asin="four", brand_share=1),
+    ]
+    _compute_brand_share(products)
+    assert [product.brand_share for product in products] == [0.5, 0.5, 0.25, None]
+    _compute_brand_share([])
+
+
+def test_pipeline_brand_share_uses_only_scored_products_and_refreshes_cached_scores(tmp_path):
+    class BrandedProducts:
+        def collect(self, asin, category):
+            return Product(asin=asin, brand="Acme", bsr=None if asin == "missing" else 100)
+
+    bestsellers = FakeBestsellers()
+    bestsellers.products = [
+        Product(asin="one", brand="Acme"), Product(asin="two", brand="ACME"),
+        Product(asin="missing", brand="Other"),
+    ]
+    storage = Storage(tmp_path / "brands.db")
+    pipeline = Pipeline(
+        settings=Settings(enable_1688=False), storage=storage,
+        bestsellers=bestsellers, products=BrandedProducts(), trends=FakeTrends(),
+        reviews=FakeReviews(), pain_points=FakePainPoints(),
+    )
+    task_id, _ = pipeline.collect("home")
+    result = pipeline.run("home", task_id=task_id, top=0)
+    assert len(result.products) == 2
+    assert all(item.product.brand_share == 1 for item in result.products)
+    assert all(item.scores.competition == 0 for item in result.products)
+    for record in storage.list_product_records(task_id):
+        product = Product.model_validate(record["product"])
+        if record["stage"] == "scored":
+            product.metadata["pipeline_scores"]["profit"] = 100
+            product.metadata["pipeline_scores"]["competition"] = 100
+            storage.save_product(task_id, product.asin, product.model_dump(mode="json"), "scored")
+    resumed = pipeline.run("home", task_id=task_id, top=0)
+    assert all(item.scores.profit is None for item in resumed.products)
+    assert all(item.scores.competition == 0 for item in resumed.products)
+    assert all(
+        item.scores.total == score_product(item.product, item.estimate).total
+        for item in resumed.products
+    )
+
+
+@pytest.mark.parametrize(
+    ("scores", "prices", "cost", "source"),
+    [
+        ([90], [36], 5, "1688_medium"),
+        ([90, 86], [36, 38], 37 / 7.2, "1688_high"),
+        ([90, 86], [10, 100], None, "fallback"),
+        ([], [], None, "fallback"),
+    ],
+)
+def test_pipeline_adopts_only_usable_supplier_costs(tmp_path, scores, prices, cost, source):
+    class FakeLLM:
+        def complete_json(self, messages):
+            return {
+                "keywords": "杯子",
+                "matches": [{"index": index, "score": score} for index, score in enumerate(scores)],
+            }
+
+    class FakeSupplier:
+        def collect(self, keywords, limit):
+            return [
+                {"title": "杯子", "price_min_cny": price, "price_max_cny": price}
+                for price in prices
+            ]
+
+    storage = Storage(tmp_path / "costs.db")
+    pipeline = Pipeline(
+        settings=Settings(enable_1688=False), storage=storage,
+        bestsellers=FakeBestsellers(), products=FakeProducts(),
+        trends=FakeTrends(), reviews=FakeReviews(), pain_points=FakePainPoints(),
+        supplier=FakeSupplier(), sourcing=SourcingAnalyzer(FakeLLM()),
+    )
+    result = pipeline.run("home", top=0)
+    item = result.products[0]
+    expected_cost = pytest.approx(cost) if cost is not None else None
+    assert item.product.acquisition_cost == expected_cost
+    assert item.scores.details["cost_source"] == source
+    resumed = pipeline.run("home", task_id=result.task_id, top=0).products[0]
+    assert resumed.product.acquisition_cost == expected_cost
+    assert resumed.scores.details["cost_source"] == source

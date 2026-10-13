@@ -124,8 +124,28 @@ def test_fba_fee_uses_size_weight_and_marks_missing_measurements():
         package_weight_lb=0.25,
     )
     missing = Product(asin="B000000002")
-    assert estimate_fba_fee(standard) == (3.35, "size_tier")
+    assert estimate_fba_fee(standard) == (3.06, "size_tier")
     assert estimate_fba_fee(missing) == (5.5, "conservative_fallback")
+
+
+@pytest.mark.parametrize("dimensions", [(18, 14, 8), (8, 18, 14)])
+def test_light_standard_item_uses_actual_weight(dimensions):
+    product = Product(
+        asin="B000000001", package_length_in=dimensions[0],
+        package_width_in=dimensions[1], package_height_in=dimensions[2],
+        package_weight_lb=0.25,
+    )
+    assert estimate_fba_fee(product) == (3.06, "size_tier")
+
+
+def test_large_item_uses_dimensional_weight():
+    product = Product(
+        asin="B000000001", package_length_in=20, package_width_in=15,
+        package_height_in=10, package_weight_lb=0.25,
+    )
+    fee, source = estimate_fba_fee(product)
+    assert fee == pytest.approx(6.92 + (3000 / 139 - 1) * 2 * 0.16)
+    assert source == "size_tier"
 
 
 def test_sourcing_uses_llm_similarity_and_converts_prices():

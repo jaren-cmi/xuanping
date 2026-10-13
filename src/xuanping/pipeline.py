@@ -21,6 +21,20 @@ from xuanping.storage import Storage
 logger = logging.getLogger(__name__)
 
 
+def _compute_brand_share(products: list[Product]) -> None:
+    # 同一榜单内品牌集中度的代理指标，分母为实际参与评分的商品数（含未知品牌）。
+    brand_counts: dict[str, int] = {}
+    for product in products:
+        if product.brand:
+            brand = product.brand.casefold()
+            brand_counts[brand] = brand_counts.get(brand, 0) + 1
+    for product in products:
+        product.brand_share = (
+            brand_counts[product.brand.casefold()] / len(products)
+            if product.brand else None
+        )
+
+
 class Pipeline:
     def __init__(
         self,
@@ -62,15 +76,7 @@ class Pipeline:
         self.storage.save_task(
             task_id, category, "collected", {"list_type": list_type, "count": len(results)}
         )
-        brand_counts: dict[str, int] = {}
         for product in results:
-            if product.brand:
-                brand_counts[product.brand.casefold()] = (
-                    brand_counts.get(product.brand.casefold(), 0) + 1
-                )
-        for product in results:
-            if product.brand:
-                product.brand_share = brand_counts[product.brand.casefold()] / len(results)
             self.storage.save_product(
                 task_id, product.asin, product.model_dump(mode="json"), stage="collected"
             )
@@ -116,12 +122,6 @@ class Pipeline:
                 errors.append(message)
         if not self.storage.get_task(task_id):
             self.storage.save_task(task_id, category, "collecting", {})
-        brand_counts: dict[str, int] = {}
-        for candidate in candidates:
-            if candidate.brand:
-                brand_counts[candidate.brand.casefold()] = (
-                    brand_counts.get(candidate.brand.casefold(), 0) + 1
-                )
         analyzed: list[ReportProduct] = []
         product_records: dict[str, tuple[Product, str]] = {}
         for index, candidate in enumerate(candidates, start=1):
@@ -141,10 +141,6 @@ class Pipeline:
                         product.brand = candidate.brand
                     if product.bsr is None:
                         raise ValueError("商品详情页没有可用 BSR")
-                    product.brand_share = (
-                        brand_counts.get(product.brand.casefold(), 0) / len(candidates)
-                        if product.brand and candidates else None
-                    )
                     self.storage.save_product(
                         task_id, product.asin, product.model_dump(mode="json"), stage="detailed"
                     )
@@ -165,14 +161,8 @@ class Pipeline:
                 continue
             product_records[product.asin] = (product, stage)
 
-        # 同一榜单内品牌占比是竞品品牌集中度的代理指标。
-        brands: dict[str, int] = {}
-        for product, _ in product_records.values():
-            if product.brand:
-                brands[product.brand.casefold()] = brands.get(product.brand.casefold(), 0) + 1
+        _compute_brand_share([product for product, _ in product_records.values()])
         for product, stage in product_records.values():
-            if product.brand:
-                product.brand_share = brands[product.brand.casefold()] / len(candidates)
             if force:
                 product.metadata.pop("supplier_analysis", None)
                 product.acquisition_cost = None
@@ -184,10 +174,6 @@ class Pipeline:
                     )
                     sourcing = self.sourcing.match(product, offers)
                     product.metadata["supplier_analysis"] = sourcing
-                    if sourcing["confidence"] != "low" and sourcing["cost_min_usd"] is not None:
-                        product.acquisition_cost = (
-                            sourcing["cost_min_usd"] + sourcing["cost_max_usd"]
-                        ) / 2
                 except CaptchaDetected as error:
                     message = f"CAPTCHA 告警：{error}"
                     logger.error(message)
@@ -196,6 +182,14 @@ class Pipeline:
                 except Exception as error:
                     logger.warning("商品 %s 1688 比价失败: %s", product.asin, error)
                     errors.append(f"{product.asin} 1688 比价: {error}")
+            sourcing = product.metadata.get("supplier_analysis")
+            if sourcing:
+                product.acquisition_cost = (
+                    (sourcing["cost_min_usd"] + sourcing["cost_max_usd"]) / 2
+                    if sourcing.get("confidence") in {"high", "medium"}
+                    and sourcing.get("cost_min_usd") is not None
+                    and sourcing.get("cost_max_usd") is not None else None
+                )
             self.storage.save_product(
                 task_id, product.asin, product.model_dump(mode="json"), stage=stage
             )
@@ -254,13 +248,15 @@ class Pipeline:
             )
             pain_points = []
             if stage in {"scored", "pain_analyzed"} and resume and not force:
-                saved = product.metadata.get("pipeline_scores")
                 saved_estimate = product.metadata.get("pipeline_estimate")
-                if saved and saved_estimate:
-                    from xuanping.models import DimensionScores, SalesEstimate
+                if saved_estimate:
+                    from xuanping.models import SalesEstimate
 
-                    scores = DimensionScores.model_validate(saved)
                     estimate = SalesEstimate.model_validate(saved_estimate)
+                    scores = score_product(
+                        product, estimate, weights=self.settings.score_weights,
+                        default_cost_multiplier=self.settings.default_cost_multiplier,
+                    )
                 if stage == "pain_analyzed":
                     from xuanping.models import PainPoint
 
@@ -326,6 +322,10 @@ class Pipeline:
         return result
 
 
+def _format_dimension(value: float | None) -> str:
+    return f"{value:.1f}" if value is not None else "N/A"
+
+
 def render_report(result: TaskResult, output_format: str = "md") -> str:
     if output_format == "json":
         return result.model_dump_json(indent=2)
@@ -345,11 +345,11 @@ def render_report(result: TaskResult, output_format: str = "md") -> str:
                     product.title,
                     product.price,
                     item.estimate.monthly_sales,
-                    score.demand,
-                    score.competition,
-                    score.profit,
-                    score.opportunity,
-                    score.risk,
+                    score.demand if score.demand is not None else "N/A",
+                    score.competition if score.competition is not None else "N/A",
+                    score.profit if score.profit is not None else "N/A",
+                    score.opportunity if score.opportunity is not None else "N/A",
+                    score.risk if score.risk is not None else "N/A",
                     score.total,
                 ]
             )
@@ -378,8 +378,9 @@ def render_report(result: TaskResult, output_format: str = "md") -> str:
         lines.append(
             f"| {product.asin}{warning} | {product.title.replace('|', ' ')} | "
             f"{product.price or '未知'} | {interval} / {estimate.confidence} | "
-            f"{score.demand:.1f} | {score.competition:.1f} | {score.profit:.1f} | "
-            f"{score.opportunity:.1f} | {score.risk:.1f} | {score.total:.1f} |"
+            f"{_format_dimension(score.demand)} | {_format_dimension(score.competition)} | "
+            f"{_format_dimension(score.profit)} | {_format_dimension(score.opportunity)} | "
+            f"{_format_dimension(score.risk)} | {score.total:.1f} |"
         )
     lines.extend(["", "## Top 3 深度分析", ""])
     for index, item in enumerate(result.products[:3], start=1):
